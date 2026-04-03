@@ -10,13 +10,19 @@ client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
 
 async def fetch_wikipedia(topic: str) -> dict:
     try:
-        url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{topic.replace(' ', '_')}"
+        clean_topic = topic.replace("What is ", "").replace("Tell me about ", "").replace("Who is ", "").replace("?", "").strip()
+        url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{clean_topic.replace(' ', '_')}"
         async with httpx.AsyncClient(timeout=10.0) as c:
             r = await c.get(url, headers={"User-Agent": "ADK-MCP-Agent/1.0"})
             if r.status_code == 200:
                 d = r.json()
                 return {"found": True, "title": d.get("title", topic), "summary": d.get("extract", "")[:500], "url": d.get("content_urls", {}).get("desktop", {}).get("page", "")}
-            return {"found": False, "title": topic, "summary": "No article found.", "url": ""}
+            search_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{clean_topic.split()[0]}"
+            r2 = await c.get(search_url, headers={"User-Agent": "ADK-MCP-Agent/1.0"})
+            if r2.status_code == 200:
+                d = r2.json()
+                return {"found": True, "title": d.get("title", topic), "summary": d.get("extract", "")[:500], "url": d.get("content_urls", {}).get("desktop", {}).get("page", "")}
+            return {"found": False, "title": clean_topic, "summary": f"Could not find Wikipedia article for {clean_topic}.", "url": ""}
     except Exception as e:
         return {"found": False, "title": topic, "summary": str(e), "url": ""}
 
@@ -39,15 +45,15 @@ async def ask(request: Request):
     prompt = f"""You are a helpful assistant. Use this Wikipedia data to answer the question.
 Wikipedia data: {json.dumps(wiki_data)}
 Question: {question}
-Return ONLY this JSON format:
-{{"topic": "{question}", "answer": "your answer here", "source": "Wikipedia via MCP", "url": "{wiki_data.get('url', '')}", "model": "llama"}}"""
+Return ONLY this JSON with no extra text:
+{{"topic": "{wiki_data.get('title', question)}", "answer": "your detailed answer here based on wikipedia data", "source": "Wikipedia via MCP", "url": "{wiki_data.get('url', '')}", "model": "llama"}}"""
     try:
         response = client.chat.completions.create(model="llama-3.3-70b-versatile", messages=[{"role": "user", "content": prompt}], temperature=0.3)
         result_text = response.choices[0].message.content.strip()
         cleaned = result_text.replace("```json","").replace("```","").strip()
         result = json.loads(cleaned)
     except Exception as e:
-        result = {"topic": question, "answer": wiki_data.get("summary", str(e)), "source": "Wikipedia via MCP", "url": wiki_data.get("url", ""), "model": "llama"}
+        result = {"topic": wiki_data.get("title", question), "answer": wiki_data.get("summary", str(e)), "source": "Wikipedia via MCP", "url": wiki_data.get("url", ""), "model": "llama"}
     return JSONResponse(content=result)
 
 @app.get("/")
